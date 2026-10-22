@@ -53,32 +53,19 @@ A customer gets at most one alert per type every 30 seconds, so one burst does n
 
 You need **Docker Desktop** and **Python 3** (built and tested with Python 3.15). Run everything from this folder.
 
-**1. Set your passwords**
-
-```bash
-cp .env.example .env
-```
-
-Open `.env` and fill in both passwords. Make them long and random (`openssl rand -hex 24` makes one). The `.env` file stays on your machine, and git ignores it.
-
-- `REDIS_PASSWORD` protects Redis. Docker will not start Redis without it.
-- `DASHBOARD_PASSWORD` puts a login box in front of the dashboard. Leave it empty for no login.
-
-Kafka has no password. Everything listens only on `localhost`, so only your own computer can reach it. If you ever put this online, the dashboard password alone is not enough: add HTTPS and keep Kafka and Redis private.
-
-**2. Start Kafka and Redis**
+**1. Start Kafka and Redis**
 
 ```bash
 docker compose up -d
 ```
 
-**3. Install the Python packages**
+**2. Install the Python packages**
 
 ```bash
 python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
 ```
 
-**4. Create the Kafka mailboxes** (wait a few seconds after step 2 so Kafka is ready)
+**3. Create the Kafka mailboxes** (wait a few seconds after step 1 so Kafka is ready)
 
 ```bash
 for t in transactions fraud_alerts transactions_dlq; do
@@ -87,7 +74,7 @@ for t in transactions fraud_alerts transactions_dlq; do
 done
 ```
 
-**5. Start the three programs**, each in its own terminal. Start the detector before the producer. The first time, it only sees purchases sent after it starts.
+**4. Start the three programs**, each in its own terminal. Start the detector before the producer. The first time, it only sees purchases sent after it starts.
 
 ```bash
 .venv/bin/python -m fraud.detector            # terminal 1: finds the fraud
@@ -95,7 +82,7 @@ done
 .venv/bin/python -m fraud.producer --rate 100 # terminal 3: makes fake purchases
 ```
 
-**6. Open http://localhost:8501** and sign in with your `DASHBOARD_PASSWORD`.
+**5. Open http://localhost:8501**
 
 To stop, press Ctrl+C in each terminal, then run `docker compose down`.
 
@@ -104,7 +91,16 @@ To stop, press Ctrl+C in each terminal, then run `docker compose down`.
 - The producer has options: `--rate` (purchases per second), `--duration` (seconds, 0 means forever), `--travel-rate` and `--fraud-rate` (how much fraud to plant). A lower `--rate`, like 20, gives a calmer screen.
 - The dashboard says **"Connected, no transactions"** when the producer is not running.
 - Amount spikes take a while to show up, because each customer needs 5 purchases first. At 100 a second that is about a minute. At 20 a second it is several minutes.
-- Every new producer run gives the customers new home cities. If you run it again within 6 hours, some customers will seem to jump between cities. Clear the old notes first: `docker exec fraud-redis sh -c 'redis-cli -a "$REDIS_PASSWORD" --no-auth-warning flushdb'`.
+- Every new producer run gives the customers new home cities. If you run it again within 6 hours, some customers will seem to jump between cities. Clear the old notes first: `docker exec fraud-redis sh -c 'redis-cli ${REDIS_PASSWORD:+-a "$REDIS_PASSWORD"} --no-auth-warning flushdb'`.
+
+**Optional: turn on passwords**
+
+Everything listens only on `localhost`, so a local demo needs no passwords, and by default there are none. If you want them anyway, or if you ever expose this to a network, copy `.env.example` to `.env` and fill in either or both. Then run `docker compose up -d` and restart the detector and the dashboard.
+
+- `REDIS_PASSWORD` makes Redis require a password.
+- `DASHBOARD_PASSWORD` puts a login box in front of the dashboard.
+
+Make each one long and random (`openssl rand -hex 24` makes one). The `.env` file stays on your machine, and git ignores it. Kafka has no password option here. Putting this online would also need HTTPS, with Kafka and Redis kept private.
 
 ## Why Redis? A test that proves it
 
@@ -125,7 +121,7 @@ With Redis, restarting loses nothing. To see the difference yourself, start the 
 | File | What it does |
 |---|---|
 | `docker-compose.yml` | Starts Kafka and Redis. |
-| `.env.example` | The list of settings (the two passwords). Copy it to `.env`. |
+| `.env.example` | The optional settings (the two passwords). Copy it to `.env` to use them. |
 | `fraud/producer.py` | Makes the fake purchases and plants fraud. |
 | `fraud/detector.py` | Reads purchases, runs the rules, sends alerts. |
 | `fraud/rules.py` | The three fraud rules. This is the brain. |
@@ -147,7 +143,7 @@ With Redis, restarting loses nothing. To see the difference yourself, start the 
 - **Customer notes expire** after 6 hours without activity, so Redis does not fill up.
 - **The dashboard ignores broken alerts** and escapes any text it shows.
 - **Everything is private to your computer.** Kafka, Redis and the dashboard only listen on `localhost`.
-- **Redis and the dashboard have passwords.** They live in `.env`, which git ignores. The Redis password is kept out of the process list, and a wrong password fails at once instead of retrying. The dashboard shows nothing but a login box until the right password is typed, and each wrong try waits longer than the last. Kafka has no password.
+- **Passwords are optional and off by default.** Turn on a Redis password and a dashboard login in `.env` (see above). The Redis password is kept out of the process list, and a wrong password fails at once instead of retrying. With a dashboard password set, the page shows nothing but a login box until the right password is typed, and each wrong try waits longer than the last. Kafka has no password.
 
 ## Run the tests
 
@@ -159,7 +155,7 @@ The tests that need Redis are skipped if Redis is not running.
 
 ## Limits worth knowing
 
-- It is a demo: one Kafka server with no password, one shared dashboard password instead of user accounts, and all data is fake.
+- It is a demo: one Kafka server with no password, no passwords on Redis or the dashboard unless you turn them on (and then one shared dashboard password, not user accounts), and all data is fake.
 - To make a "later" swipe without waiting, the producer stamps the second swipe of an impossible trip 1 to 3 minutes into the future. Occasionally that gives an odd-looking alert.
 - If the detector crashes at exactly the wrong moment (after saving a customer's notes but before sending the alert), that one alert can be lost.
 - A swipe that arrives late (older than the customer's latest one) is not checked for impossible travel.
@@ -174,7 +170,7 @@ This is a demo. To use it in a real company it would need:
 - **Trustworthy data and rules:** a versioned message format, real coordinates and card tokens, rules kept in config (not code) and tested on past data before going live, and a fix for the lost-alert case above.
 - **Durable alerts and cases:** alerts saved in a database, with status, owner, notes and an audit trail, so they survive restarts.
 - **Reliability and scale:** several Kafka servers and a Redis with failover, the Python programs in containers (for example on Kubernetes), and a load test far beyond 100 purchases a second.
-- **Security and privacy:** real user accounts and roles (today there is one shared dashboard password), a Kafka password, encryption for Kafka and Redis, secrets kept in a vault instead of a `.env` file, card-data (PCI-DSS) and privacy (GDPR) rules, and a security review.
+- **Security and privacy:** real user accounts and roles (today there is at most one shared dashboard password, and it is off by default), a Kafka password, encryption for Kafka and Redis, secrets kept in a vault instead of a `.env` file, card-data (PCI-DSS) and privacy (GDPR) rules, and a security review.
 - **Monitoring:** metrics and alarms for delay, backlog, errors, and rules that suddenly stop firing, plus written recovery steps.
 - **Engineering habits:** automatic checks on every change (CI), a `LICENSE`, and separate dev, staging and production setups.
 - **A real web app:** Streamlit suits an internal tool. Many users would need a backend API and a proper front end.
