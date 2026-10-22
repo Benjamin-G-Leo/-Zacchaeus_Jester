@@ -24,13 +24,26 @@ from fraud.common import BOOTSTRAP, CITIES
 LABEL = {"impossible_travel": "Impossible travel", "velocity": "Velocity", "amount_spike": "Amount spike"}
 COLOR = {"impossible_travel": "#ef4444", "velocity": "#f59e0b", "amount_spike": "#3b82f6"}
 CSS_CLASS = {"impossible_travel": "c-red", "velocity": "c-amber", "amount_spike": "c-blue"}
-FRESH_S = 3  # an alert is "new" on screen for this long
+LIST_EVERY_S = 5  # the lists and the map refresh in one batch this often, and hold still in between
 BANNER_S = 6
+BANNER_HOLD_S = 2  # keep one banner message on screen at least this long
+NEW_DOT_S = 4  # an alert keeps its green "new" dot for this long after it arrives
 ROWS_PER_COLUMN = 12
 SEVERITY = {"impossible_travel": "Critical", "velocity": "High", "amount_spike": "Medium"}
 FRAME_S = 1.0
-MAP_EVERY_S = 3
 PULSE_S = 1.6  # keep in sync with the CSS pulse animation
+
+DEFINITION = {
+    "impossible_travel": (
+        f"One card used in two cities too far apart to travel between in the time given: "
+        f"{R.MIN_TRAVEL_KM}+ km apart and faster than {R.MAX_SPEED_KMH} km/h."
+    ),
+    "velocity": f"Too many purchases at once: {R.VELOCITY_MAX_TX} or more transactions inside {R.VELOCITY_WINDOW_S} seconds.",
+    "amount_spike": (
+        f"One purchase far above that user's own normal: more than {R.AMOUNT_MIN_RATIO}x their average and "
+        f"{R.AMOUNT_SIGMAS} standard deviations above it (needs {R.AMOUNT_MIN_SAMPLES} past purchases)."
+    ),
+}
 
 CSS = """
 <style>
@@ -43,6 +56,11 @@ CSS = """
   --sans: 'Inter', -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Segoe UI', sans-serif;
   --mono: 'Geist Mono', ui-monospace, 'SF Mono', Menlo, monospace;
 }
+
+/* Streamlit gives every Markdown block margin-bottom: -16px to cancel a paragraph's spacing. Our blocks are
+   not paragraphs, so that margin made each one 16px shorter than it is, and it overlapped the next block. */
+[data-testid="stMarkdownContainer"]:has(> .top, > .banner, > .badges, > .section, > .col-head, > .empty,
+    > .key-legend, > .d-head, > .sub-h) { margin-bottom: 0 !important; }
 
 /* page shell: drop Streamlit's own chrome */
 html, body, [data-testid="stApp"], [data-testid="stAppViewContainer"] { background: var(--bg) !important; }
@@ -85,11 +103,21 @@ header[data-testid="stHeader"], #MainMenu, footer, [data-testid="stStatusWidget"
            font-size: 12px; font-weight: 500; color: var(--muted); }
 .section .count { font-family: var(--mono); color: var(--faint); }
 
+/* legend: what each alert type means. Its own cards under the map, so nothing sits on top of the map */
+.key-legend { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 1rem; }  /* same gap as the three lists below, so the columns line up */
+.key-item { background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: 11px 14px; min-width: 0; }
+.key-name { display: flex; align-items: center; gap: 8px; font-size: 12.5px; font-weight: 500; color: var(--text); }
+.key-def { margin-top: 5px; font-size: 12px; line-height: 1.5; color: var(--muted); overflow-wrap: anywhere; }
+@media (max-width: 900px) { .key-legend { grid-template-columns: 1fr; } }
+
 /* critical banner */
-.banner { display: flex; align-items: center; gap: 10px; border: 1px solid rgba(239,68,68,.45);
-          background: rgba(239,68,68,.08); border-radius: 8px; padding: 10px 14px; font-size: 13px; color: var(--text); }
+/* the strip is always there at a fixed height, so a critical alert never shifts the page */
+.banner { display: flex; align-items: center; gap: 10px; height: 44px; box-sizing: border-box; overflow: hidden;
+          border: 1px solid rgba(239,68,68,.45); background: rgba(239,68,68,.08); border-radius: 8px;
+          padding: 0 14px; font-size: 13px; color: var(--text); white-space: nowrap; }
 .banner b { color: var(--red); font-weight: 600; }
-.banner .mono { font-family: var(--mono); font-size: 12px; color: var(--muted); }
+.banner .mono { font-family: var(--mono); font-size: 12px; color: var(--muted); min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.banner.calm { border-color: var(--line); background: var(--card); color: var(--faint); }
 
 /* three alert lists: one card per rule, every row is a button */
 [class*="st-key-list_"] { background: var(--card); border: 1px solid var(--line); border-radius: 8px;
@@ -112,6 +140,9 @@ header[data-testid="stHeader"], #MainMenu, footer, [data-testid="stStatusWidget"
 [class*="st-key-row_"] button code { font-family: var(--mono); font-size: 11.5px; color: var(--muted); background: #27272a;
         border-radius: 4px; padding: 1px 6px; }
 .empty { padding: 30px 14px; text-align: center; color: var(--faint); font-size: 13px; }
+
+/* a hidden switch the hover script flips; out of the layout so it adds no gap */
+.st-key-hover_box { position: absolute; width: 0; height: 0; overflow: hidden; opacity: 0; pointer-events: none; }
 
 /* detail dialog */
 [data-testid="stDialog"] div[role="dialog"] { background: var(--bg); border: 1px solid var(--line); border-radius: 12px; }
@@ -146,41 +177,98 @@ header[data-testid="stHeader"], #MainMenu, footer, [data-testid="stStatusWidget"
 """
 
 
+# While the pointer (or keyboard focus) is on a list, tell Python to stop refreshing it, so the row
+# you are about to click cannot move. The page script cannot see the mouse, so this flips a hidden
+# Streamlit switch, which makes it rerun with hover_hold = True. If it cannot find the switch it
+# does nothing and the lists simply refresh on their timer.
+HOLD_JS = """
+<script>
+(() => {
+  if (window.__fraudHold) return;  // bind once per page load
+  window.__fraudHold = true;
+  const setHold = (want) => {
+    const box = document.querySelector('.st-key-hover_hold input[type="checkbox"]');
+    if (box && box.checked !== want) box.click();
+  };
+  const bind = () => document.querySelectorAll('[class*="st-key-list_"]').forEach((el) => {
+    if (el.__holdBound) return;
+    el.__holdBound = true;
+    el.addEventListener('mouseenter', () => setHold(true));
+    el.addEventListener('mouseleave', () => setHold(false));
+    el.addEventListener('focusin', () => setHold(true));
+    el.addEventListener('focusout', () => setHold(false));
+  });
+  bind();
+  setInterval(bind, 500);  // lists can be re-created, so keep checking
+})();
+</script>
+"""
+
+
 @st.cache_resource
 def collector():
     return Collector()
 
 
+def alert_key(a):
+    return f"{a['rule']}_{a['tx_id']}"
+
+
 def track_new(alerts, now):
-    """Note when each alert first appeared on screen, and raise the banner for new travel alerts."""
+    """Raise the critical banner when a new impossible-travel alert arrives."""
     ss = st.session_state
-    ss.setdefault("first_seen", {})
+    ss.setdefault("seen", set())
     ss.setdefault("banner_until", 0.0)
-    ss.setdefault("banner", "")
+    ss.setdefault("banner_hold", 0.0)
+    ss.setdefault("banner", ("", ""))
     primed = ss.get("primed", False)
-    for a in reversed(alerts):  # oldest first, so the banner ends on the newest
-        k = f"{a['tx_id']}|{a['rule']}"
-        if k in ss.first_seen:
+    for a in reversed(alerts):  # oldest first
+        k = alert_key(a)
+        if k in ss.seen:
             continue
+        ss.seen.add(k)
         # alerts already there when the page first opens are history, not news
-        ss.first_seen[k] = now if primed else 0.0
         if primed and a["rule"] == "impossible_travel":
-            ss.banner = (a["user_id"], a["detail"])
             ss.banner_until = now + BANNER_S
+            if now >= ss.banner_hold:  # under heavy traffic, keep each message readable
+                ss.banner, ss.banner_hold = (a["user_id"], a["detail"]), now + BANNER_HOLD_S
     ss.primed = True
-    live = {f"{a['tx_id']}|{a['rule']}" for a in alerts}
-    for k in [k for k in ss.first_seen if k not in live]:  # forget alerts that scrolled off
-        del ss.first_seen[k]
+    ss.seen &= {alert_key(a) for a in alerts}  # forget alerts that scrolled off
 
 
-def age_of(a, now):
-    seen = st.session_state.first_seen.get(f"{a['tx_id']}|{a['rule']}", 0.0)
-    return now - seen if seen else None
+def refresh_view(snap, now):
+    """Decide what the lists and the map show.
+
+    New alerts arrive many times a second. Redrawing the lists each second made every row
+    slide down under the cursor, so a click opened a different alert than the one you were
+    pointing at. Now they refresh in one batch every few seconds, or not at all while Pause
+    is on. Counters and the sparkline stay live, since a changing number moves nothing.
+    """
+    ss = st.session_state
+    ss.setdefault("view", [])
+    ss.setdefault("view_at", 0.0)
+    ss.setdefault("view_version", 0)
+    ss.setdefault("new_keys", set())
+    paused = bool(ss.get("paused", False))
+    holding = bool(ss.get("hover_hold", False))  # pointer or focus is on a list
+    resumed = ss.get("was_paused", False) and not paused
+    ss.was_paused = paused
+    first = ss.view_at == 0.0
+    if first or resumed or (not paused and not holding and now - ss.view_at >= LIST_EVERY_S):
+        before = {alert_key(a) for a in ss.view}
+        ss.view = snap["alerts"]
+        ss.new_keys = set() if first else {alert_key(a) for a in ss.view if alert_key(a) not in before}
+        ss.view_at = now
+        ss.view_version += 1
 
 
-def is_fresh(a, now):
-    age = age_of(a, now)
-    return age is not None and age < FRESH_S
+def is_new(a, now):
+    """In the latest batch and only seconds old: gets the green dot, which then fades on its own.
+
+    Alerts arrive faster than the lists refresh, so without the age limit every row in a
+    fresh batch would be marked new and the dot would say nothing.
+    """
+    return alert_key(a) in st.session_state.get("new_keys", ()) and now - a["seen_at"] < NEW_DOT_S
 
 
 def phase(now):
@@ -239,7 +327,7 @@ def badges_html(snap, now):
 def banner_html(now):
     ss = st.session_state
     if now >= ss.banner_until:
-        return ""
+        return '<div class="banner calm"><span class="dot"></span><span>No critical alerts right now</span></div>'
     user, detail = ss.banner
     return (f'<div class="banner" role="alert"><span class="dot c-red pulse" style="{phase(now)}"></span>'
             f'<b>Critical</b><span>Impossible travel</span>'
@@ -257,7 +345,9 @@ def plain(text, limit=24):
 
 
 def row_label(a, now):
-    new = ":green[●] " if is_fresh(a, now) else ""
+    # Same-width dot on every row (green when new, gray otherwise). A dot that came and went moved the
+    # row text sideways by its own width each time, which read as jitter.
+    new = ":green[●] " if is_new(a, now) else ":gray[●] "
     rule = a["rule"]
     if rule == "impossible_travel":
         main = f"**{plain(a.get('from_city', '?'))} → {plain(a['city'])}**"
@@ -276,18 +366,28 @@ def clear_selection():
     st.session_state.selected = None
 
 
+def legend_html():
+    cells = "".join(
+        f'<div class="key-item" role="listitem"><div class="key-name"><span class="dot {CSS_CLASS[rule]}"></span>'
+        f'{LABEL[rule]}</div><div class="key-def">{html.escape(DEFINITION[rule])}</div></div>'
+        for rule in LABEL
+    )
+    return f'<div class="key-legend" role="list" aria-label="What each alert type means">{cells}</div>'
+
+
 def alert_columns(snap, now):
     """One card per rule. Every row is a button; clicking one opens its detail dialog."""
     for col, rule in zip(st.columns(3, gap="small"), LABEL):
         with col, st.container(key=f"list_{rule}"):
             st.markdown(
-                f'<div class="col-head"><span class="dot {CSS_CLASS[rule]}"></span>{LABEL[rule]}'
+                f'<div class="col-head" title="{html.escape(DEFINITION[rule], quote=True)}">'
+                f'<span class="dot {CSS_CLASS[rule]}"></span>{LABEL[rule]}'
                 f'<span class="count">{snap["by_rule"].get(rule, 0):,}</span></div>',
                 unsafe_allow_html=True,
             )
             seen, rows = set(), []
-            for a in snap["alerts"]:  # newest first
-                k = f"{a['rule']}_{a['tx_id']}"
+            for a in st.session_state.view:  # newest first, held still between refreshes
+                k = alert_key(a)
                 if a["rule"] == rule and k not in seen:  # a replayed alert must not repeat a widget key
                     seen.add(k)
                     rows.append((k, a))
@@ -415,7 +515,7 @@ def make_map(alerts, now, height=380, focus=False):
         pts = [a for a in alerts if a["rule"] == rule and a["city"] in CITIES]
         if not pts:
             continue
-        fresh = [is_fresh(a, now) for a in pts]
+        fresh = [is_new(a, now) for a in pts]
         fig.add_trace(go.Scattergeo(
             lat=[CITIES[a["city"]][0] for a in pts], lon=[CITIES[a["city"]][1] for a in pts],
             mode="markers", name=label,
@@ -448,35 +548,46 @@ def make_map(alerts, now, height=380, focus=False):
                     marker=dict(size=9, color="rgba(0,0,0,0)", line=dict(width=2, color=COLOR[a["rule"]]))))
     fig.update_layout(height=height, margin=dict(l=0, r=0, t=0, b=0), paper_bgcolor="rgba(0,0,0,0)",
                       font=dict(family="Inter, sans-serif", size=11, color="#a1a1aa"),
-                      legend=dict(orientation="h", y=0.03, x=0.015, bgcolor="rgba(9,9,11,0.7)",
-                                  bordercolor="#27272a", borderwidth=1))
+                      showlegend=False)  # the legend is HTML under the map, not a box on top of it
     return fig
 
 
 st.set_page_config(page_title="Fraud monitor", page_icon="🛡️", layout="wide")
 st.markdown(CSS, unsafe_allow_html=True)
+with st.container(key="hover_box"):
+    st.toggle("hover hold", key="hover_hold", label_visibility="collapsed")
+    st.html(HOLD_JS, unsafe_allow_javascript=True)
 
+ss = st.session_state
 snap = collector().snapshot()
 now = time.time()
 track_new(snap["alerts"], now)
+refresh_view(snap, now)
 
 st.markdown(header_html(snap, now), unsafe_allow_html=True)
-if now < st.session_state.banner_until:
-    st.markdown(banner_html(now), unsafe_allow_html=True)
+st.markdown(banner_html(now), unsafe_allow_html=True)
 st.markdown(badges_html(snap, now), unsafe_allow_html=True)
 
 st.markdown('<div class="section">Alert map</div>', unsafe_allow_html=True)
-# Plotly remounts whenever its figure changes. Rebuilding it every frame made the map
-# redraw each second and reset hover tooltips, so rebuild every few seconds and hand
-# over the identical figure in between.
-ss = st.session_state
-if "map_fig" not in ss or now - ss.map_at >= MAP_EVERY_S:
-    ss.map_fig, ss.map_at = make_map(snap["alerts"][:80], now), now
+# Plotly remounts whenever its figure changes, so rebuild it only when the lists refresh.
+if ss.get("map_version") != ss.view_version:
+    ss.map_fig, ss.map_version = make_map(ss.view[:80], now), ss.view_version
 # scrollZoom off, or scrolling the page over the map zooms the map instead
 st.plotly_chart(ss.map_fig, width="stretch", key="map", config={"scrollZoom": False, "displayModeBar": False})
+st.markdown(legend_html(), unsafe_allow_html=True)
 
-st.markdown(f'<div class="section">Live alerts<span class="count">{snap["alert_total"]:,} total</span></div>',
-            unsafe_allow_html=True)
+shown = {alert_key(a) for a in ss.view}
+waiting = sum(1 for a in snap["alerts"] if alert_key(a) not in shown)
+if ss.get("paused"):
+    status = f"Paused, {waiting:,} new waiting"
+elif ss.get("hover_hold"):
+    status = f"Held while you point here, {waiting:,} new waiting"
+else:
+    status = f"Refreshes every {LIST_EVERY_S}s"
+head, switch = st.columns([3, 1], vertical_alignment="center")
+head.markdown(f'<div class="section">Live alerts<span class="count">{status} · {snap["alert_total"]:,} total</span></div>',
+              unsafe_allow_html=True)
+switch.toggle("Pause", key="paused", help="Freeze the lists and map so you can read and click without rows moving")
 alert_columns(snap, now)
 
 if ss.get("selected"):

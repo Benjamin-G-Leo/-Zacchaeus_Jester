@@ -92,11 +92,17 @@ What is on screen:
 
 - Metric badges with a small status dot: transactions, throughput with a 60 second sparkline, active anomalies (alerts in the last 60 seconds, with a pulsing red dot while any exist), and a count per rule.
 - A bordered world map: a dot per alert (larger and outlined while new) and curved arcs for impossible travel. Plotly loads country shapes from cdn.plot.ly, so the map needs internet. It redraws every 3 seconds, not every frame, so it does not flicker.
-- Live alerts split into three lists, one per rule (impossible travel, velocity, amount spike), each with its own running count. Every row is a button: a green dot marks a new alert, and clicking a row opens a detail popup.
+- A legend under the map that says what each alert type means, in plain words, with the real thresholds filled in from `fraud/rules.py` so it cannot drift from the code. Each list header shows the same definition as a tooltip. Plotly's own legend is off because it sat on top of the map.
+- Live alerts split into three lists, one per rule (impossible travel, velocity, amount spike), each with its own running count. Every row is a button: a green dot marks an alert from the last few seconds, and clicking a row opens a detail popup.
+- The lists hold still so rows do not slide under the cursor. They refresh in one batch every 5 seconds, and not at all while the pointer or keyboard focus is on a list, or while the Pause switch is on. The header says which ("Refreshes every 5s", "Held while you point here, N new waiting", "Paused"). Counters and the sparkline stay live, since a changing number moves nothing. Before this, the lists redrew every second under load and a click opened a different alert than the one under the cursor in 8 of 9 tries.
 - The detail popup shows a plain-English reason, the numbers behind the rule (distance, time and implied speed for travel; count and window for velocity; typical purchase, multiple and threshold for amount spikes), a small map of the cities, other recent alerts for the same user, and the raw event.
-- A thin red banner for 6 seconds when a new impossible-travel alert arrives. Reduced-motion settings turn the animations off.
+- A status strip at a fixed height: red with the latest critical alert for 6 seconds, gray and quiet otherwise, so it never shifts the page. Reduced-motion settings turn the animations off.
 
 The live loop pauses while a popup is open, which also freezes the lists so you can read. Closing it with Close or the X resumes updates. The one-second wait is ten 0.1 second sleeps with a trivial Streamlit call between them, because Streamlit only notices a click at its next call. That makes a click open the popup in about 0.1 seconds instead of up to a second.
+
+The hold-on-hover uses a small script (`st.html` with `unsafe_allow_javascript`) that flips a hidden Streamlit switch, because the page script cannot see the mouse. If the script cannot find the switch it does nothing and the lists just refresh on their timer.
+
+Spacing note: Streamlit gives every Markdown block `margin-bottom: -16px`, which shortens HTML blocks that are not paragraphs and made each one overlap the next. A CSS rule in `dashboard/app.py` cancels that for our blocks. Checked for overlaps at 375, 652, 768, 1024 and 1280 px wide, on the page and in the detail popup.
 
 Because of the sleep and rerun loop, the page keeps one Python script running per open browser tab, and CSS hides Streamlit's "running" indicator and its fade on old elements. Redis keeps user state for 6 hours, so after changing the producer seed run `docker exec fraud-redis redis-cli flushdb` first, or users will seem to teleport between cities.
 
