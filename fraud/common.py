@@ -4,8 +4,9 @@ import math
 import os
 
 BOOTSTRAP = os.environ.get("KAFKA_BOOTSTRAP", "localhost:9092")
+REDIS_URL = os.environ.get("REDIS_URL", "redis://localhost:6379/0")
 TOPIC_TX = "transactions"
-TOPIC_ALERTS = "fraud-alerts"
+TOPIC_ALERTS = "fraud_alerts"
 
 # name -> (lat, lon)
 CITIES = {

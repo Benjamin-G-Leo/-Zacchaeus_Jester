@@ -46,11 +46,15 @@ def normal(user, ts, rng):
 
 def impossible_travel(user, ts, rng):
     far = rng.choice([c for c in CITIES if c != user["home"]])
-    # Second swipe is stamped 5 simulated minutes later so we don't wait for real.
-    return [
+    # Second swipe is stamped 1 to 3 simulated minutes later so we don't wait for real.
+    pair = [
         tx(user, user["home"], user["typical"], ts),
-        tx(user, far, user["typical"], ts + 300),
+        tx(user, far, user["typical"], ts + rng.uniform(60, 180)),
     ]
+    # From now on this user shops in the new city. Otherwise their next normal swipe
+    # back home would be a second, legitimate-looking impossible trip.
+    user["home"] = far
+    return pair
 
 
 def velocity_burst(user, ts, rng):
@@ -63,14 +67,24 @@ def amount_spike(user, ts, rng):
     return [tx(user, user["home"], user["typical"] * rng.uniform(12, 25), ts)]
 
 
-FRAUD = [impossible_travel, velocity_burst, amount_spike]
+OTHER_FRAUD = [velocity_burst, amount_spike]
+
+
+def pick(rng, travel_rate, other_rate):
+    r = rng.random()
+    if r < travel_rate:
+        return impossible_travel
+    if r < travel_rate + other_rate:
+        return rng.choice(OTHER_FRAUD)
+    return normal
 
 
 def main():
     p = argparse.ArgumentParser()
     p.add_argument("--rate", type=float, default=50, help="transactions per second")
     p.add_argument("--users", type=int, default=1000)
-    p.add_argument("--fraud-rate", type=float, default=0.02)
+    p.add_argument("--travel-rate", type=float, default=0.05, help="share of events that are impossible travel")
+    p.add_argument("--fraud-rate", type=float, default=0.02, help="share that are velocity or amount fraud")
     p.add_argument("--duration", type=float, default=0, help="seconds, 0 = forever")
     p.add_argument("--seed", type=int)
     args = p.parse_args()
@@ -98,7 +112,7 @@ def main():
         while args.duration == 0 or time.time() - start < args.duration:
             ts = time.time()
             user = rng.choice(users)
-            make = rng.choice(FRAUD) if rng.random() < args.fraud_rate else normal
+            make = pick(rng, args.travel_rate, args.fraud_rate)
             for t in make(user, ts, rng):
                 producer.send(TOPIC_TX, key=t["user_id"], value=t)
                 sent += 1

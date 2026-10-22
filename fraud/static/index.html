@@ -4,6 +4,8 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Fraud Alerts</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+      integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="anonymous">
 <style>
   :root {
     --bg: #0f1216; --panel: #181d24; --line: #262d37; --text: #e6e9ee; --muted: #8b95a3;
@@ -16,28 +18,51 @@
   body { margin: 0; background: var(--bg); color: var(--text);
          font: 14px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
   main { max-width: 1100px; margin: 0 auto; padding: 24px 16px 48px; }
-  header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 20px; }
+  header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 16px; }
   h1 { font-size: 20px; margin: 0; }
   .live { color: var(--muted); font-size: 13px; display: flex; align-items: center; gap: 6px; }
   .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--ok); }
   .dot.off { background: var(--travel); }
-  .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; margin-bottom: 20px; }
+
+  /* critical banner: flashes when a new impossible-travel alert lands */
+  #banner { margin-bottom: 16px; padding: 12px 16px; border-radius: 10px; font-weight: 600;
+            color: #fff; background: #d6293e; animation: banner 0.9s ease-in-out infinite alternate; }
+  #banner[hidden] { display: none; }
+  @keyframes banner { from { background: #d6293e; } to { background: #7a1020; } }
+
+  .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 12px; margin-bottom: 16px; }
   .card { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; }
   .card .label { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .04em; }
   .card .value { font-size: 28px; font-weight: 600; margin-top: 4px; font-variant-numeric: tabular-nums; }
-  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
+  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; overflow: hidden; margin-bottom: 16px; }
   .panel h2 { font-size: 14px; margin: 0; padding: 12px 16px; border-bottom: 1px solid var(--line); }
+
+  #map { height: 360px; background: var(--bg); }
+  /* OSM tiles are light only; invert them to fit the dark theme */
+  @media (prefers-color-scheme: dark) {
+    .leaflet-tile-pane { filter: invert(1) hue-rotate(180deg) brightness(.9) contrast(.9); }
+  }
+  #map-note { padding: 32px 16px; text-align: center; color: var(--muted); }
+  .pulse { display: block; width: 14px; height: 14px; border-radius: 50%; background: var(--c);
+           box-shadow: 0 0 0 0 var(--c); animation: ping 1.2s ease-out infinite; }
+  @keyframes ping { to { box-shadow: 0 0 0 18px transparent; } }
+
   table { width: 100%; border-collapse: collapse; }
   th, td { text-align: left; padding: 9px 16px; border-bottom: 1px solid var(--line); }
   th { color: var(--muted); font-weight: 500; font-size: 12px; }
   tr:last-child td { border-bottom: 0; }
   td.num { font-variant-numeric: tabular-nums; }
+  tr.fresh { animation: row 2.5s ease-out both; }
+  @keyframes row { from { background: color-mix(in srgb, var(--travel) 35%, transparent); } to { background: transparent; } }
   .tag { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 12px; font-weight: 500; }
   .tag.impossible_travel { background: color-mix(in srgb, var(--travel) 20%, transparent); color: var(--travel); }
   .tag.velocity { background: color-mix(in srgb, var(--velocity) 20%, transparent); color: var(--velocity); }
   .tag.amount_spike { background: color-mix(in srgb, var(--amount) 20%, transparent); color: var(--amount); }
   .empty { padding: 32px 16px; text-align: center; color: var(--muted); }
-  @media (max-width: 640px) { th:nth-child(5), td:nth-child(5) { display: none; } }
+  @media (max-width: 640px) { th:nth-child(5), td:nth-child(5) { display: none; } #map { height: 260px; } }
+  @media (prefers-reduced-motion: reduce) {
+    #banner, .pulse, tr.fresh { animation: none; }
+  }
 </style>
 </head>
 <body>
@@ -47,6 +72,8 @@
     <div class="live"><span class="dot" id="dot"></span><span id="status">connecting…</span></div>
   </header>
 
+  <div id="banner" role="alert" hidden></div>
+
   <section class="cards">
     <div class="card"><div class="label">Transactions</div><div class="value" id="tx">0</div></div>
     <div class="card"><div class="label">Tx / sec</div><div class="value" id="rate">0</div></div>
@@ -54,6 +81,12 @@
     <div class="card"><div class="label">Impossible travel</div><div class="value" id="r-travel">0</div></div>
     <div class="card"><div class="label">Velocity</div><div class="value" id="r-velocity">0</div></div>
     <div class="card"><div class="label">Amount spike</div><div class="value" id="r-amount">0</div></div>
+  </section>
+
+  <section class="panel">
+    <h2>Alert map</h2>
+    <div id="map"></div>
+    <div id="map-note" hidden>The map needs internet for tiles and could not load.</div>
   </section>
 
   <section class="panel">
@@ -66,16 +99,75 @@
   </section>
 </main>
 
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+        integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin="anonymous"></script>
 <script>
 const $ = id => document.getElementById(id);
 const label = { impossible_travel: "Impossible travel", velocity: "Velocity", amount_spike: "Amount spike" };
+const color = { impossible_travel: "#ff6b6b", velocity: "#f5b942", amount_spike: "#5ab0ff" };
 const esc = s => String(s).replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 const n = x => (x || 0).toLocaleString();
+
+// ---- map (optional: needs the Leaflet CDN) ----
+let map = null, layer = null;
+if (window.L) {
+  map = L.map("map", { worldCopyJump: true, minZoom: 1 }).setView([25, 20], 2);
+  L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
+    attribution: "&copy; OpenStreetMap contributors", maxZoom: 6,
+  }).addTo(map);
+  layer = L.layerGroup().addTo(map);
+} else {
+  $("map").hidden = true;
+  $("map-note").hidden = false;
+}
+
+// ---- new-alert tracking, so only genuinely new rows and markers flash ----
+const firstSeen = new Map();
+let primed = false;
+let bannerUntil = 0;
+const key = a => `${a.tx_id}|${a.rule}`;
+
+function noteNew(alerts, now) {
+  for (const a of alerts) {
+    const k = key(a);
+    if (firstSeen.has(k)) continue;
+    // alerts already on the page at first load are history, not news
+    firstSeen.set(k, primed ? now : 0);
+    if (primed && a.rule === "impossible_travel") {
+      $("banner").textContent = `CRITICAL: impossible travel, ${a.user_id}: ${a.detail}`;
+      $("banner").hidden = false;
+      bannerUntil = now + 6000;
+    }
+  }
+  primed = true;
+  if (bannerUntil && now > bannerUntil) { $("banner").hidden = true; bannerUntil = 0; }
+}
+
+function drawMap(alerts, now) {
+  if (!map) return;
+  layer.clearLayers();
+  for (const a of alerts) {
+    if (!a.pos) continue;
+    const c = color[a.rule] || "#999";
+    if (a.from_pos) L.polyline([a.from_pos, a.pos], { color: c, weight: 1.5, dashArray: "4 6", opacity: .7 }).addTo(layer);
+    const fresh = firstSeen.get(key(a)) && now - firstSeen.get(key(a)) < 4000;
+    const tip = `${label[a.rule] || a.rule}: ${a.user_id} (${a.city})`;
+    if (fresh) {
+      L.marker(a.pos, { icon: L.divIcon({ className: "", iconSize: [14, 14],
+        html: `<span class="pulse" style="--c:${c}"></span>` }) }).bindTooltip(tip).addTo(layer);
+    } else {
+      L.circleMarker(a.pos, { radius: 5, color: c, fillColor: c, fillOpacity: .5, weight: 1 }).bindTooltip(tip).addTo(layer);
+    }
+  }
+}
 
 async function tick() {
   try {
     const r = await fetch("/api/state", { cache: "no-store" });
     const s = await r.json();
+    const now = Date.now();
+    noteNew(s.alerts, now);
+
     $("tx").textContent = n(s.tx_total);
     $("rate").textContent = s.tx_per_sec;
     $("alerts").textContent = n(s.alert_total);
@@ -83,14 +175,22 @@ async function tick() {
     $("r-velocity").textContent = n(s.by_rule.velocity);
     $("r-amount").textContent = n(s.by_rule.amount_spike);
     $("empty").style.display = s.alerts.length ? "none" : "block";
-    $("rows").innerHTML = s.alerts.map(a => `
-      <tr>
-        <td class="num">${new Date(a.ts * 1000).toLocaleTimeString()}</td>
+    $("rows").innerHTML = s.alerts.map(a => {
+      const seen = firstSeen.get(key(a));
+      const age = seen ? now - seen : Infinity;
+      // negative delay resumes the flash where it left off, so rebuilding rows doesn't restart it
+      const cls = age < 2500 ? ` class="fresh" style="animation-delay:-${(age / 1000).toFixed(2)}s"` : "";
+      return `
+      <tr${cls}>
+        <td class="num">${new Date(a.seen_at * 1000).toLocaleTimeString()}</td>
         <td><span class="tag ${esc(a.rule)}">${esc(label[a.rule] || a.rule)}</span></td>
         <td>${esc(a.user_id)}</td>
         <td class="num">$${Number(a.amount).toFixed(2)}</td>
         <td>${esc(a.detail)}</td>
-      </tr>`).join("");
+      </tr>`;
+    }).join("");
+    drawMap(s.alerts, now);
+
     $("dot").classList.remove("off");
     $("status").textContent = "live";
   } catch (e) {

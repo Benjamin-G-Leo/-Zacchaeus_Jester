@@ -14,7 +14,7 @@ from pathlib import Path
 
 from kafka import KafkaConsumer
 
-from .common import BOOTSTRAP, TOPIC_ALERTS, TOPIC_TX, loads
+from .common import BOOTSTRAP, CITIES, TOPIC_ALERTS, TOPIC_TX, loads
 
 PORT = 8000
 INDEX = Path(__file__).with_name("static") / "index.html"
@@ -33,9 +33,16 @@ def watch_alerts():
         TOPIC_ALERTS, bootstrap_servers=BOOTSTRAP, value_deserializer=loads, auto_offset_reset="latest"
     )
     for rec in consumer:
+        a = rec.value
+        a["seen_at"] = time.time()  # event time can be simulated future; show arrival time
+        # the map needs coordinates; cities are the only location we have
+        if a["city"] in CITIES:
+            a["pos"] = CITIES[a["city"]]
+        if a.get("from_city") in CITIES:
+            a["from_pos"] = CITIES[a["from_city"]]
         with lock:
-            alerts.appendleft(rec.value)
-            by_rule[rec.value["rule"]] += 1
+            alerts.appendleft(a)
+            by_rule[a["rule"]] += 1
             alert_total += 1
 
 

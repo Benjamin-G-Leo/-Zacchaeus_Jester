@@ -11,7 +11,7 @@ import time
 from kafka import KafkaConsumer, KafkaProducer
 
 from .common import BOOTSTRAP, TOPIC_ALERTS, TOPIC_TX, dumps, loads
-from .rules import UserState
+from .state import make_store
 
 
 def main():
@@ -29,10 +29,10 @@ def main():
         bootstrap_servers=BOOTSTRAP, value_serializer=dumps, key_serializer=str.encode, linger_ms=10
     )
 
-    states = {}
+    store = make_store()
     seen = flagged = 0
     last_report = time.time()
-    print(f"detector listening on '{TOPIC_TX}'. Ctrl+C to stop.")
+    print(f"detector listening on '{TOPIC_TX}', state in {store.name}. Ctrl+C to stop.")
     try:
         while True:
             batch = consumer.poll(timeout_ms=1000)
@@ -40,15 +40,14 @@ def main():
                 for rec in records:
                     t = rec.value
                     seen += 1
-                    state = states.setdefault(t["user_id"], UserState())
-                    for alert in state.process(t):
+                    for alert in store.process(t):
                         producer.send(TOPIC_ALERTS, key=t["user_id"], value=alert)
                         flagged += 1
             if batch:
                 producer.flush()  # alerts are out before we mark the batch done
                 consumer.commit()
             if time.time() - last_report >= 5:
-                print(f"processed {seen} tx, {flagged} alerts, {len(states)} users tracked")
+                print(f"processed {seen} tx, {flagged} alerts")
                 last_report = time.time()
     except KeyboardInterrupt:
         pass

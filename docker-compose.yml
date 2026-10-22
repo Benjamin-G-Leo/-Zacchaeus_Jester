@@ -17,3 +17,15 @@ services:
       KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
       KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
       KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+
+  redis:
+    image: redis:7-alpine
+    container_name: fraud-redis
+    command: ["redis-server", "--appendonly", "yes"]  # keep state across Redis restarts too
+    ports:
+      - "6379:6379"
+    volumes:
+      - redisdata:/data
+
+volumes:
+  redisdata:

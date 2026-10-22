@@ -1,8 +1,9 @@
-"""Fraud rules. Pure logic, no Kafka, so it is easy to test.
+"""Fraud rules. Pure logic, no Kafka or Redis, so it is easy to test.
 
 All time is *event time* (the timestamp on the transaction), not wall clock.
-Each user has their own small state; Kafka keys by user_id, so one consumer
-always sees one user's events in order.
+`evaluate` looks at one transaction plus what we remember about the user
+(`UserState`) and returns alerts. Where that memory lives (Python dict or
+Redis) is decided in `state.py`.
 """
 import math
 from collections import deque
@@ -27,19 +28,22 @@ COOLDOWN_S = 30
 
 
 class UserState:
+    """What the rules remember about one user, apart from the velocity window."""
+
     def __init__(self):
-        self.window = deque()  # (ts, amount) inside the velocity window
-        self.last = None  # last tx dict, for travel check
+        self.last_ts = None
+        self.last_city = None
         # Welford running mean/variance of amounts
         self.n = 0
         self.mean = 0.0
         self.m2 = 0.0
         self.last_alert = {}  # rule -> ts
+        self._window = deque()  # in-memory velocity window (Redis uses a sorted set)
 
-    def _std(self):
+    def std(self):
         return math.sqrt(self.m2 / (self.n - 1)) if self.n > 1 else 0.0
 
-    def _cooled(self, rule, ts):
+    def cooled(self, rule, ts):
         prev = self.last_alert.get(rule)
         if prev is not None and ts - prev < COOLDOWN_S:
             return False
@@ -47,66 +51,83 @@ class UserState:
         return True
 
     def process(self, tx):
-        """Feed one transaction, return a list of alert dicts (maybe empty)."""
-        ts, amount = tx["ts"], tx["amount"]
-        alerts = []
+        """In-memory path: track the velocity window here, then run the rules."""
+        ts = tx["ts"]
+        self._window.append(ts)
+        while self._window and ts - self._window[0] > VELOCITY_WINDOW_S:
+            self._window.popleft()
+        return evaluate(self, tx, len(self._window))
 
-        # 1. impossible travel
-        prev = self.last
-        if prev and prev["city"] != tx["city"] and ts > prev["ts"]:
-            km = haversine_km(CITIES[prev["city"]], CITIES[tx["city"]])
-            hours = (ts - prev["ts"]) / 3600
-            speed = km / hours
-            if km >= MIN_TRAVEL_KM and speed > MAX_SPEED_KMH:
-                if self._cooled("impossible_travel", ts):
-                    alerts.append(
-                        _alert(
-                            tx,
-                            "impossible_travel",
-                            f"{prev['city']} -> {tx['city']} ({km:.0f} km) in "
-                            f"{(ts - prev['ts']) / 60:.1f} min",
-                        )
-                    )
+    def to_fields(self):
+        f = {"n": self.n, "mean": self.mean, "m2": self.m2}
+        if self.last_ts is not None:
+            f["last_ts"] = self.last_ts
+            f["last_city"] = self.last_city
+        for rule, ts in self.last_alert.items():
+            f["cd:" + rule] = ts
+        return f
 
-        # 2. velocity (sliding window)
-        self.window.append((ts, amount))
-        while self.window and ts - self.window[0][0] > VELOCITY_WINDOW_S:
-            self.window.popleft()
-        if len(self.window) >= VELOCITY_MAX_TX and self._cooled("velocity", ts):
+    @classmethod
+    def from_fields(cls, fields):
+        s = cls()
+        if not fields:
+            return s
+        s.n = int(fields.get("n", 0))
+        s.mean = float(fields.get("mean", 0))
+        s.m2 = float(fields.get("m2", 0))
+        if "last_ts" in fields:
+            s.last_ts = float(fields["last_ts"])
+            s.last_city = fields["last_city"]
+        s.last_alert = {k[3:]: float(v) for k, v in fields.items() if k.startswith("cd:")}
+        return s
+
+
+def evaluate(s, tx, window_count):
+    """Run all rules for one transaction and update `s`.
+
+    window_count is how many of this user's transactions (including this one)
+    fall inside the velocity window. The caller owns that window.
+    """
+    ts, amount, city = tx["ts"], tx["amount"], tx["city"]
+    alerts = []
+
+    # 1. impossible travel
+    if s.last_city is not None and s.last_city != city and ts > s.last_ts:
+        km = haversine_km(CITIES[s.last_city], CITIES[city])
+        speed = km / ((ts - s.last_ts) / 3600)
+        if km >= MIN_TRAVEL_KM and speed > MAX_SPEED_KMH and s.cooled("impossible_travel", ts):
             alerts.append(
                 _alert(
                     tx,
-                    "velocity",
-                    f"{len(self.window)} transactions in {VELOCITY_WINDOW_S}s",
+                    "impossible_travel",
+                    f"{s.last_city} -> {city} ({km:.0f} km) in {(ts - s.last_ts) / 60:.1f} min",
+                    from_city=s.last_city,
                 )
             )
 
-        # 3. amount spike, judged against history *before* this tx
-        if self.n >= AMOUNT_MIN_SAMPLES:
-            limit = self.mean + AMOUNT_SIGMAS * self._std()
-            if amount > limit and amount > AMOUNT_MIN_RATIO * self.mean:
-                if self._cooled("amount_spike", ts):
-                    alerts.append(
-                        _alert(
-                            tx,
-                            "amount_spike",
-                            f"${amount:,.2f} vs typical ${self.mean:,.2f}",
-                        )
-                    )
+    # 2. velocity (sliding window)
+    if window_count >= VELOCITY_MAX_TX and s.cooled("velocity", ts):
+        alerts.append(_alert(tx, "velocity", f"{window_count} transactions in {VELOCITY_WINDOW_S}s"))
 
-        # Update state. Skip flagged amounts so one spike can't skew "normal".
-        if not any(a["rule"] == "amount_spike" for a in alerts):
-            self.n += 1
-            d = amount - self.mean
-            self.mean += d / self.n
-            self.m2 += d * (amount - self.mean)
-        if prev is None or ts >= prev["ts"]:
-            self.last = tx
-        return alerts
+    # 3. amount spike, judged against history *before* this tx
+    if s.n >= AMOUNT_MIN_SAMPLES:
+        limit = s.mean + AMOUNT_SIGMAS * s.std()
+        if amount > limit and amount > AMOUNT_MIN_RATIO * s.mean and s.cooled("amount_spike", ts):
+            alerts.append(_alert(tx, "amount_spike", f"${amount:,.2f} vs typical ${s.mean:,.2f}"))
+
+    # Update state. Skip flagged amounts so one spike can't skew "normal".
+    if not any(a["rule"] == "amount_spike" for a in alerts):
+        s.n += 1
+        d = amount - s.mean
+        s.mean += d / s.n
+        s.m2 += d * (amount - s.mean)
+    if s.last_ts is None or ts >= s.last_ts:
+        s.last_ts, s.last_city = ts, city
+    return alerts
 
 
-def _alert(tx, rule, detail):
-    return {
+def _alert(tx, rule, detail, from_city=None):
+    a = {
         "rule": rule,
         "detail": detail,
         "user_id": tx["user_id"],
@@ -115,3 +136,6 @@ def _alert(tx, rule, detail):
         "city": tx["city"],
         "ts": tx["ts"],
     }
+    if from_city:
+        a["from_city"] = from_city
+    return a
