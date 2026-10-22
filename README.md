@@ -24,7 +24,7 @@ for t in transactions fraud_alerts; do
 done
 
 .venv/bin/python -m fraud.detector         # terminal 1 (run more copies to scale out)
-.venv/bin/python -m fraud.dashboard        # terminal 2, open http://localhost:8000
+.venv/bin/streamlit run dashboard/app.py   # terminal 2, open http://localhost:8501
 .venv/bin/python -m fraud.producer --rate 100   # terminal 3
 ```
 
@@ -73,13 +73,19 @@ With memory, one restart lost 3 of 3 frauds. With Redis, 0 of 3. Redis also lets
 
 ## Dashboard
 
-Plain Python standard library server plus one HTML page (Leaflet map, OpenStreetMap tiles, so the map needs internet). New impossible-travel alerts flash a red banner, pulse on the map, and flash in the table. Reduced-motion settings turn the animation off.
+Streamlit app (`dashboard/app.py`). Background threads read the `fraud_alerts` and `transactions` topics into one shared collector, and a fragment re-renders from a snapshot every second.
+
+- Metric tiles: transactions, tx/sec, alerts, and a count per rule
+- Plotly world map: a dot per alert (bigger and outlined while new) and curved travel arcs from the first city to the second. Plotly loads the country shapes from cdn.plot.ly, so the map needs internet.
+- Latest alerts table with a NEW tag for the first 5 seconds
+- Impossible-travel alerts flash a red banner for 6 seconds and raise one summary toast at most every 4 seconds. Reduced-motion settings turn the flashing off.
 
 ## Status
 
-- Done: Kafka and Redis compose, producer (5% impossible travel), detector with Redis state, three rules, 14 unit tests, live dashboard with map, restart test.
+- Done: Kafka and Redis compose, producer (5% impossible travel), detector with Redis state, three rules, 14 unit tests, Streamlit dashboard with map, restart test.
 - Known quirks:
   - The producer fakes time by stamping the second travel swipe 1 to 3 minutes in the future. A user picked twice within that window can produce a travel alert that looks odd ("in 0.6 min"). About 3.7% of transactions get a travel alert against 5% of events planted.
   - The amount rule needs about a minute of warmup per user at default rates.
   - Map location is the city only. Single Kafka broker, no auth.
-- Not done: load test beyond 100 tx/s, Docker Compose services for the Python parts, a Streamlit version of the dashboard.
+  - The dashboard only counts alerts that arrive while it is running (it reads from the latest offset).
+- Not done: load test beyond 100 tx/s, Docker Compose services for the Python parts.
