@@ -30,7 +30,8 @@ def haversine_km(a, b):
         math.sin((lat2 - lat1) / 2) ** 2
         + math.cos(lat1) * math.cos(lat2) * math.sin((lon2 - lon1) / 2) ** 2
     )
-    return 2 * 6371 * math.asin(math.sqrt(h))
+    # min() guards float error pushing h a hair above 1 for near-antipodal points
+    return 2 * 6371 * math.asin(min(1.0, math.sqrt(h)))
 
 
 def dumps(obj) -> bytes:

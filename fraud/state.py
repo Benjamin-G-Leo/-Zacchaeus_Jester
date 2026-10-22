@@ -12,9 +12,14 @@ one to write back). Every command is O(1) or O(log n) on a tiny set.
 import os
 
 from .common import REDIS_URL
+from .retry import retry_with_backoff
 from .rules import VELOCITY_WINDOW_S, UserState, evaluate
 
-TTL_S = 24 * 3600  # idle users expire so Redis doesn't grow forever
+# Every write resets this, so a user's keys vanish 6 hours after their last
+# transaction and Redis can't fill up with users who never come back. The state
+# is a hash and the window a sorted set, and SETEX only works on strings, so the
+# TTL is set with EXPIRE in the same pipeline as the write.
+TTL_S = 6 * 3600
 
 
 class MemoryStore:
@@ -65,5 +70,9 @@ def make_store():
     import redis
 
     client = redis.Redis.from_url(REDIS_URL, decode_responses=True)
-    client.ping()  # fail fast if Redis isn't up
+    retry_with_backoff(  # Redis may still be starting under Docker
+        client.ping,
+        "Redis",
+        retry_on=(redis.exceptions.ConnectionError, redis.exceptions.TimeoutError, OSError),
+    )
     return RedisStore(client)

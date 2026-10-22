@@ -2,14 +2,13 @@
 
     streamlit run dashboard/app.py
 
-Background threads read Kafka into a shared Collector (one per server, not per
-browser tab). The page is a fragment that re-renders from a snapshot every second.
+Background daemon threads (fraud/collector.py) read Kafka and hand alerts to the
+page through a queue.Queue. One Collector per server, not per browser tab. The
+page is a fragment that polls snapshot() every second and never touches Kafka.
 """
 import html
 import sys
-import threading
 import time
-from collections import Counter, deque
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))  # so `fraud` imports
@@ -17,72 +16,15 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))  # so `fraud` im
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
-from kafka import KafkaConsumer
 
-from fraud.common import BOOTSTRAP, CITIES, TOPIC_ALERTS, TOPIC_TX, loads
+from fraud.collector import Collector
+from fraud.common import BOOTSTRAP, CITIES
 
 LABEL = {"impossible_travel": "Impossible travel", "velocity": "Velocity", "amount_spike": "Amount spike"}
 COLOR = {"impossible_travel": "#ff6b6b", "velocity": "#f5b942", "amount_spike": "#5ab0ff"}
 FRESH_S = 5  # how long an alert counts as "new" on screen
 BANNER_S = 6
 TOAST_EVERY_S = 4
-
-
-class Collector:
-    """Reads Kafka on background threads. The page only ever reads snapshot()."""
-
-    def __init__(self):
-        self.lock = threading.Lock()
-        self.alerts = deque(maxlen=300)  # newest first
-        self.by_rule = Counter()
-        self.alert_total = 0
-        self.tx_total = 0
-        self.tx_times = deque()
-        self.error = None
-        for fn in (self._watch_alerts, self._watch_tx):
-            threading.Thread(target=self._retry, args=(fn,), daemon=True).start()
-
-    def _retry(self, fn):
-        while True:  # Kafka may start after us; keep trying
-            try:
-                fn()
-            except Exception as e:  # noqa: BLE001
-                self.error = f"{type(e).__name__}: {e}"
-                time.sleep(3)
-
-    def _watch_alerts(self):
-        consumer = KafkaConsumer(
-            TOPIC_ALERTS, bootstrap_servers=BOOTSTRAP, value_deserializer=loads, auto_offset_reset="latest"
-        )
-        self.error = None
-        for rec in consumer:
-            a = rec.value
-            a["seen_at"] = time.time()  # event time can be simulated future; show arrival time
-            with self.lock:
-                self.alerts.appendleft(a)
-                self.by_rule[a["rule"]] += 1
-                self.alert_total += 1
-
-    def _watch_tx(self):
-        consumer = KafkaConsumer(TOPIC_TX, bootstrap_servers=BOOTSTRAP, auto_offset_reset="latest")
-        for _ in consumer:  # only counting, so skip JSON parsing
-            with self.lock:
-                self.tx_total += 1
-                self.tx_times.append(time.time())
-
-    def snapshot(self):
-        now = time.time()
-        with self.lock:
-            while self.tx_times and now - self.tx_times[0] > 10:
-                self.tx_times.popleft()
-            return {
-                "tx_total": self.tx_total,
-                "tx_per_sec": len(self.tx_times) / 10,
-                "alert_total": self.alert_total,
-                "by_rule": dict(self.by_rule),
-                "alerts": list(self.alerts),
-                "error": self.error,
-            }
 
 
 @st.cache_resource

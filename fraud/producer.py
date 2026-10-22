@@ -14,6 +14,7 @@ import uuid
 from kafka import KafkaProducer
 
 from .common import BOOTSTRAP, CITIES, TOPIC_TX, dumps
+from .retry import connect_kafka
 
 
 def make_users(n, rng):
@@ -91,7 +92,8 @@ def main():
 
     rng = random.Random(args.seed)
     users = make_users(args.users, rng)
-    producer = KafkaProducer(
+    producer = connect_kafka(
+        KafkaProducer,
         bootstrap_servers=BOOTSTRAP,
         value_serializer=dumps,
         key_serializer=str.encode,

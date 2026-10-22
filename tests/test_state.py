@@ -56,6 +56,21 @@ def test_state_survives_a_new_store_object(client):
     assert [a["rule"] for a in out] == ["impossible_travel"]
 
 
+def test_state_keys_expire_after_six_hours(client):
+    tx = {"tx_id": "e1", "user_id": "u7", "amount": 40.0, "city": "Mumbai", "ts": 1000}
+    RedisStore(client).process(tx)
+    for key in ("fraud:user:u7:state", "fraud:user:u7:window"):
+        assert 6 * 3600 - 5 <= client.ttl(key) <= 6 * 3600  # set, and about six hours
+
+
+def test_ttl_is_refreshed_by_new_activity(client):
+    red = RedisStore(client)
+    red.process({"tx_id": "r1", "user_id": "u6", "amount": 40.0, "city": "Mumbai", "ts": 1000})
+    client.expire("fraud:user:u6:state", 100)  # pretend the key is nearly expired
+    red.process({"tx_id": "r2", "user_id": "u6", "amount": 40.0, "city": "Mumbai", "ts": 2000})
+    assert client.ttl("fraud:user:u6:state") > 6 * 3600 - 5
+
+
 def test_replayed_message_is_not_double_counted(client):
     red = RedisStore(client)
     tx = {"tx_id": "same", "user_id": "u8", "amount": 10.0, "city": "Mumbai", "ts": 5000}

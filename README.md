@@ -49,7 +49,7 @@ Per user:
 - `fraud:user:<id>:state`: hash with last city and time, running amount mean and variance, cooldowns
 - `fraud:user:<id>:window`: sorted set, score is event time, member is `tx_id`. This is the sliding window. Old entries are trimmed on every transaction, so each lookup stays O(log n) on a tiny set.
 
-Two round trips per transaction (a pipeline to slide the window and load state, one to write back). Keys expire after 24 hours of inactivity. Set `STATE_BACKEND=memory` to run without Redis.
+Two round trips per transaction (a pipeline to slide the window and load state, one to write back). Every write resets a 6 hour expiry on both keys, so users who stop transacting disappear from Redis after 6 hours and memory stays bounded. (`SETEX` only works on string keys. The state is a hash and the window a sorted set, so the expiry is set with `EXPIRE` in the same pipeline as the write.) Set `STATE_BACKEND=memory` to run without Redis.
 
 ## Why Redis: the restart test
 
@@ -61,7 +61,7 @@ Two round trips per transaction (a pipeline to slide the window and load state, 
 | Velocity | missed | caught |
 | Amount spike | missed | caught |
 
-With memory, one restart lost 3 of 3 frauds. With Redis, 0 of 3. Redis also lets several detectors share state and survives a Redis restart (AOF on). Trade-off: a network round trip per transaction instead of a dict lookup.
+With memory, one restart lost 3 of 3 frauds. With Redis, 0 of 3. The test waits for the detector to say it owns its partitions before sending traffic, and refuses to run if another detector is already in the consumer group (that one would quietly catch frauds and spoil the result). Redis also lets several detectors share state and survives a Redis restart (AOF on). Trade-off: a network round trip per transaction instead of a dict lookup.
 
 ## Design notes
 
@@ -69,11 +69,13 @@ With memory, one restart lost 3 of 3 frauds. With Redis, 0 of 3. Redis also lets
 - A replayed message is not double counted in the velocity window (the sorted set member is `tx_id`). The running amount average is not replay safe, so a replay can nudge it slightly.
 - Producer `send()` blocks up to 30s when the broker is slow, so load slows the producer instead of dropping data.
 - Scale out: start more detector copies. They share a consumer group and split the 3 partitions.
-- `tests/test_state.py` checks the Redis store gives the same alerts as the in-memory store on random traffic.
+- `tests/test_state.py` checks the Redis store gives the same alerts as the in-memory store on random traffic, and that keys get and keep a 6 hour expiry.
+- Startup retry: producer, detector, dashboard and the restart test connect to Kafka and Redis through `fraud/retry.py`. It waits 1s, 2s, 4s and so on (capped at 30s, with jitter) and gives up after 3 minutes, so starting before Docker is ready no longer crashes. kafka-python 3.x raises `KafkaTimeoutError` when no broker answers (there is no `NoBrokersAvailable`), so the retry catches `KafkaError`. A bad config value is never retried. The dashboard retries forever.
+- Distance uses the Haversine formula (`fraud/common.py`), checked in `tests/test_geo.py` against known city distances, the date line, and antipodal points.
 
 ## Dashboard
 
-Streamlit app (`dashboard/app.py`). Background threads read the `fraud_alerts` and `transactions` topics into one shared collector, and a fragment re-renders from a snapshot every second.
+Streamlit app (`dashboard/app.py`). Streamlit re-runs the page script all the time, so no Kafka code lives in it. Two daemon threads in `fraud/collector.py` read the `fraud_alerts` and `transactions` topics. Alerts cross to the page through a thread-safe `queue.Queue` (bounded; if no page is open it drops the oldest), and a fragment drains it once a second. One collector serves every browser tab. Counters are kept by the threads, so they stay exact.
 
 - Metric tiles: transactions, tx/sec, alerts, and a count per rule
 - Plotly world map: a dot per alert (bigger and outlined while new) and curved travel arcs from the first city to the second. Plotly loads the country shapes from cdn.plot.ly, so the map needs internet.
@@ -82,7 +84,7 @@ Streamlit app (`dashboard/app.py`). Background threads read the `fraud_alerts` a
 
 ## Status
 
-- Done: Kafka and Redis compose, producer (5% impossible travel), detector with Redis state, three rules, 14 unit tests, Streamlit dashboard with map, restart test.
+- Done: Kafka and Redis compose, producer (5% impossible travel), detector with Redis state, three rules, 37 tests, Streamlit dashboard with map, restart test, startup retry, 6 hour state expiry.
 - Known quirks:
   - The producer fakes time by stamping the second travel swipe 1 to 3 minutes in the future. A user picked twice within that window can produce a travel alert that looks odd ("in 0.6 min"). About 3.7% of transactions get a travel alert against 5% of events planted.
   - The amount rule needs about a minute of warmup per user at default rates.

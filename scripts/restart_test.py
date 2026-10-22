@@ -15,12 +15,14 @@ import os
 import signal
 import subprocess
 import sys
+import threading
 import time
 import uuid
 
 from kafka import KafkaConsumer, KafkaProducer, TopicPartition
 
 from fraud.common import BOOTSTRAP, TOPIC_ALERTS, TOPIC_TX, dumps, loads
+from fraud.retry import connect_kafka
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 FRAUDS = ("impossible_travel", "velocity", "amount_spike")
@@ -31,10 +33,25 @@ def start_detector(backend):
         [sys.executable, "-u", "-m", "fraud.detector"],
         cwd=ROOT,
         env={**os.environ, "STATE_BACKEND": backend},
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        # a shell that started us in the background may have SIGINT ignored; undo that
+        preexec_fn=lambda: signal.signal(signal.SIGINT, signal.SIG_DFL),
     )
-    time.sleep(8)  # let it join the consumer group
+    ready = threading.Event()
+
+    def pump():  # keep draining so the pipe never fills, and watch for the ready line
+        for line in p.stdout:
+            if "detector ready" in line:
+                ready.set()
+
+    threading.Thread(target=pump, daemon=True).start()
+    # Wait until it truly owns partitions. A fixed sleep is flaky: after a hard kill,
+    # Kafka keeps the old member's partitions for about 10 seconds.
+    if not ready.wait(90):
+        p.kill()
+        sys.exit("detector did not become ready within 90s")
     return p
 
 
@@ -80,12 +97,14 @@ def run(label, restart, backend):
     users = {f: f"{label}-{f[:3]}-{run_id}" for f in FRAUDS}
     by_user = {u: f for f, u in users.items()}
 
-    alerts = KafkaConsumer(bootstrap_servers=BOOTSTRAP, value_deserializer=loads)
+    alerts = connect_kafka(KafkaConsumer, bootstrap_servers=BOOTSTRAP, value_deserializer=loads)
     parts = [TopicPartition(TOPIC_ALERTS, p) for p in alerts.partitions_for_topic(TOPIC_ALERTS)]
     alerts.assign(parts)
     alerts.seek_to_end(*parts)
 
-    producer = KafkaProducer(bootstrap_servers=BOOTSTRAP, value_serializer=dumps, key_serializer=str.encode)
+    producer = connect_kafka(
+        KafkaProducer, bootstrap_servers=BOOTSTRAP, value_serializer=dumps, key_serializer=str.encode
+    )
     detector = start_detector(backend)
     t = time.time()
 
@@ -112,7 +131,18 @@ def run(label, restart, backend):
     return caught
 
 
+def other_detectors():
+    out = subprocess.run(["pgrep", "-f", "fraud.detector"], capture_output=True, text=True).stdout
+    return [p for p in out.split() if p != str(os.getpid())]
+
+
 def main():
+    # A detector already running joins the same consumer group, takes some of the
+    # partitions, and quietly catches frauds with its own state. That ruins the test.
+    others = other_detectors()
+    if others:
+        sys.exit(f"another detector is running (pid {', '.join(others)}) and shares the consumer group. "
+                 "Stop it first, e.g. kill " + others[0])
     backends = sys.argv[1].split(",") if len(sys.argv) > 1 else ["memory", "redis"]
     results = {}
     for backend in backends:
