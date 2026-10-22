@@ -151,6 +151,22 @@ The tests that need Redis are skipped if Redis is not running.
 - The dashboard only counts alerts that arrive while it is open.
 - I have not load-tested it beyond about 100 purchases a second.
 
+## What it would take to run this for real
+
+This is a demo. To use it in a real company it would need:
+
+- **Trustworthy data and rules:** a versioned message format, real coordinates and card tokens, rules kept in config (not code) and tested on past data before going live, and a fix for the lost-alert case above.
+- **Durable alerts and cases:** alerts saved in a database, with status, owner, notes and an audit trail, so they survive restarts.
+- **Reliability and scale:** several Kafka servers and a Redis with failover, the Python programs in containers (for example on Kubernetes), and a load test far beyond 100 purchases a second.
+- **Security and privacy:** logins and roles, passwords and encryption on Kafka and Redis, secrets kept in a vault, card-data (PCI-DSS) and privacy (GDPR) rules, and a security review.
+- **Monitoring:** metrics and alarms for delay, backlog, errors, and rules that suddenly stop firing, plus written recovery steps.
+- **Engineering habits:** automatic checks on every change (CI), a `LICENSE`, and separate dev, staging and production setups.
+- **A real web app:** Streamlit suits an internal tool. Many users would need a backend API and a proper front end.
+
+If I did it, the order would be: automatic checks with Kafka and Redis, then a database for alerts, then logins and passwords, then Dockerfiles and settings from environment variables, then metrics.
+
+Rough size (a guess): weeks for a solid internal tool, months for a small fintech, a year or more for bank-grade.
+
 ## Under the hood (for the curious)
 
 - **Customers stay in order.** Purchases are keyed by customer, so one customer's purchases always reach the same detector in order. You can run several detectors at once and Kafka splits the work between them.
