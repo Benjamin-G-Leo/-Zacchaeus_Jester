@@ -134,6 +134,9 @@ header[data-testid="stHeader"], #MainMenu, footer, [data-testid="stStatusWidget"
 [class*="st-key-row_"] button:hover { background: #1f1f23; color: var(--text); }
 [class*="st-key-row_"] button:focus-visible { outline: 1px solid var(--blue); outline-offset: -1px; }
 [class*="st-key-row_"] button > div { width: 100%; }
+/* Streamlit centers the label inside two wrapper elements. Left-align them, or on a wide screen the
+   text floats in the middle of each row instead of sitting at the left like a list. */
+[class*="st-key-row_"] button > div, [class*="st-key-row_"] button > div > span { justify-content: flex-start; }
 [class*="st-key-row_"] button p { margin: 0; text-align: left; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 [class*="st-key-row_"] button span, [class*="st-key-row_"] button div { min-width: 0; }
 [class*="st-key-row_"] button code { white-space: nowrap !important; word-break: keep-all !important; }
@@ -477,7 +480,7 @@ def why_text(a):
     return html.escape(a["detail"].replace("->", "→"))
 
 
-@st.dialog("Alert detail", width="large", on_dismiss=clear_selection)
+@st.dialog("Alert detail", width="medium", on_dismiss=clear_selection)  # "large" stretched across a wide screen
 def detail_dialog(a, recent, now):
     rule = a["rule"]
     st.markdown(
@@ -487,7 +490,7 @@ def detail_dialog(a, recent, now):
         f'<div class="kv">{"".join(f"<div class=k>{k}</div><div class=v>{v}</div>" for k, v in detail_rows(a))}</div>',
         unsafe_allow_html=True,
     )
-    st.plotly_chart(make_map([a], now, height=240, focus=True), width="stretch", key="detail_map",
+    st.plotly_chart(make_map([a], now, height=280, focus=True), width="stretch", key="detail_map",
                     config={"scrollZoom": False, "displayModeBar": False})
 
     others = [o for o in recent if o["user_id"] == a["user_id"] and o["tx_id"] != a["tx_id"]][:5]
@@ -538,11 +541,18 @@ def make_map(alerts, now, height=380, focus=False):
     if focus and names:  # detail view: frame the alert's own cities, with padding, instead of the whole world
         lats = [CITIES[c][0] for c in names]
         lons = [CITIES[c][1] for c in names]
-        lat_lo, lat_hi = max(-85, min(lats) - 14), min(85, max(lats) + 14)
-        # make the window as wide as the card (about 2.4 : 1) so the map fills it, never narrower than the cities
-        half = max((lat_hi - lat_lo) * 1.2, (max(lons) - min(lons)) / 2 + 22)
+        span = max(lons) - min(lons)
+        if span > 180:  # the short way between them crosses the date line (Tokyo to New York goes over the Pacific)
+            lons = [lon % 360 for lon in lons]  # so measure on a 0 to 360 scale, or we would frame the far side of the world
         mid = (min(lons) + max(lons)) / 2
-        fig.update_geos(lataxis_range=[lat_lo, lat_hi], lonaxis_range=[max(-180, mid - half), min(180, mid + half)])
+        half = (max(lons) - min(lons)) / 2 + 22  # half the window width, in degrees
+        lat_mid = (min(lats) + max(lats)) / 2
+        lat_half = max((max(lats) - min(lats)) / 2 + 14, half / 2.5)  # the card is about 2.5 : 1, so the window fills it
+        lon_lo, lon_hi = mid - half, mid + half
+        if span <= 180:
+            lon_lo, lon_hi = max(-180, lon_lo), min(180, lon_hi)
+        fig.update_geos(lataxis_range=[max(-85, lat_mid - lat_half), min(85, lat_mid + lat_half)],
+                        lonaxis_range=[lon_lo, lon_hi])
         fig.add_trace(go.Scattergeo(  # name both ends; the alert's own marker only marks the destination
             lat=[CITIES[c][0] for c in sorted(names)], lon=[CITIES[c][1] for c in sorted(names)],
             text=sorted(names), mode="text", textposition="top right", hoverinfo="skip", showlegend=False,

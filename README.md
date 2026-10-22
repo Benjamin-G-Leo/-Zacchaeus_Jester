@@ -4,6 +4,16 @@ A small system that watches a stream of (fake) card purchases, spots the suspici
 
 I built it to practice how real-time systems work: **Kafka** for moving messages, **Redis** for remembering things, **Python** for the logic, and **Streamlit** for the dashboard.
 
+## What it looks like
+
+![The live dashboard: counters, a world map of alerts, a legend, and three lists of alerts](docs/dashboard.png)
+
+Click any alert to see why it was flagged, with the numbers behind it and the route on a map:
+
+![The detail popup for an impossible trip from New York to Tokyo](docs/alert-detail.png)
+
+All of this is fake data made up by the producer.
+
 ## What is going on, in plain words
 
 Imagine a bank watching card purchases as they happen.
@@ -112,6 +122,7 @@ With Redis, restarting loses nothing. To see the difference yourself, start the 
 | `dashboard/app.py` | The web page. |
 | `scripts/restart_test.py` | The restart test above. |
 | `tests/` | Automatic checks (99 of them). |
+| `docs/` | The screenshots used in this README. |
 
 ## What keeps it from falling over
 
