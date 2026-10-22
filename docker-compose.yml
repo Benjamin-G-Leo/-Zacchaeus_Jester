@@ -1,3 +1,7 @@
+# Pin the project name. Without this Docker names the project after the folder, so renaming the
+# folder would create a new network and volume and clash with the running containers.
+name: jester_fraudpipeline
+
 services:
   kafka:
     image: apache/kafka:3.9.0
