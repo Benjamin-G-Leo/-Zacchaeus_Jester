@@ -25,9 +25,19 @@ services:
   redis:
     image: redis:7-alpine
     container_name: fraud-redis
-    command: ["redis-server", "--appendonly", "yes"]  # keep state across Redis restarts too
+    environment:
+      # Set in .env (copy .env.example). Compose refuses to start Redis without it.
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?Set REDIS_PASSWORD in .env (copy .env.example to .env)}
+    # The password goes into a config file, not onto the command line, so it never shows up in a
+    # process list. --appendonly keeps state across Redis restarts too.
+    command:
+      - sh
+      - -c
+      - |
+        printf 'requirepass %s\n' "$$REDIS_PASSWORD" > /tmp/redis.conf
+        exec redis-server /tmp/redis.conf --appendonly yes
     ports:
-      - "127.0.0.1:6379:6379"  # this machine only; Redis here has no password
+      - "127.0.0.1:6379:6379"  # this machine only
     volumes:
       - redisdata:/data
 

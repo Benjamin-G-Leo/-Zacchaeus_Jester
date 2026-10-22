@@ -18,8 +18,9 @@ import plotly.graph_objects as go
 import streamlit as st
 
 from fraud import rules as R
+from fraud.auth import failure_delay, password_ok
 from fraud.collector import Collector
-from fraud.common import BOOTSTRAP, CITIES
+from fraud.common import BOOTSTRAP, CITIES, DASHBOARD_PASSWORD
 
 LABEL = {"impossible_travel": "Impossible travel", "velocity": "Velocity", "amount_spike": "Amount spike"}
 COLOR = {"impossible_travel": "#ef4444", "velocity": "#f59e0b", "amount_spike": "#3b82f6"}
@@ -61,11 +62,14 @@ CSS = """
 /* Streamlit gives every Markdown block margin-bottom: -16px to cancel a paragraph's spacing. Our blocks are
    not paragraphs, so that margin made each one 16px shorter than it is, and it overlapped the next block. */
 [data-testid="stMarkdownContainer"]:has(> .top, > .banner, > .badges, > .section, > .col-head, > .empty,
-    > .key-legend, > .d-head, > .sub-h) { margin-bottom: 0 !important; }
+    > .key-legend, > .d-head, > .sub-h, > .login-head) { margin-bottom: 0 !important; }
 
 /* page shell: drop Streamlit's own chrome */
 html, body, [data-testid="stApp"], [data-testid="stAppViewContainer"] { background: var(--bg) !important; }
 [data-testid="stApp"] * { font-family: var(--sans); }
+/* ...but not Streamlit's icons: they are letters in an icon font ("visibility" is the eye), and forcing
+   a text font on them printed the word instead of drawing the icon. */
+[data-testid="stIconMaterial"] { font-family: "Material Symbols Rounded" !important; }
 header[data-testid="stHeader"], #MainMenu, footer, [data-testid="stStatusWidget"],
 [data-testid="stToolbar"], [data-testid="stDecoration"] { display: none !important; }
 .block-container { max-width: 1080px !important; padding: 2.2rem 1.25rem 3rem !important; }
@@ -145,6 +149,12 @@ header[data-testid="stHeader"], #MainMenu, footer, [data-testid="stStatusWidget"
         border-radius: 4px; padding: 1px 6px; }
 .empty { padding: 30px 14px; text-align: center; color: var(--faint); font-size: 13px; }
 
+/* login box */
+.st-key-login { max-width: 380px; margin: 14vh auto 0; }
+.login-head .t { font-size: 20px; font-weight: 600; color: var(--text); letter-spacing: -0.01em; }
+.login-head .s { margin: 4px 0 14px; font-size: 13px; color: var(--muted); }
+.st-key-login [data-testid="stForm"] { background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: 16px; }
+
 /* a hidden switch the hover script flips; out of the layout so it adds no gap */
 .st-key-hover_box { position: absolute; width: 0; height: 0; overflow: hidden; opacity: 0; pointer-events: none; visibility: hidden; }
 
@@ -207,6 +217,32 @@ HOLD_JS = """
 })();
 </script>
 """
+
+
+def require_login():
+    """Stop the page here until the right password is typed. Does nothing if no password is set.
+
+    One shared password, kept in .env, not user accounts. Nothing else on the page runs, and the
+    Kafka reader is not even started, until this passes. Each wrong try waits longer than the last.
+    """
+    ss = st.session_state
+    if not DASHBOARD_PASSWORD or ss.get("authed"):
+        return
+    ss.setdefault("failures", 0)
+    with st.container(key="login"):
+        st.markdown('<div class="login-head"><div class="t">Fraud monitor</div>'
+                    '<div class="s">Enter the password to view the dashboard.</div></div>', unsafe_allow_html=True)
+        with st.form("login"):
+            entered = st.text_input("Password", type="password", label_visibility="collapsed", placeholder="Password")
+            submitted = st.form_submit_button("Sign in")
+        if submitted:
+            if password_ok(entered, DASHBOARD_PASSWORD):
+                ss.authed, ss.failures = True, 0
+                st.rerun()
+            ss.failures += 1
+            time.sleep(failure_delay(ss.failures))  # slows down guessing
+            st.error("Wrong password.")
+    st.stop()
 
 
 @st.cache_resource
@@ -571,6 +607,7 @@ def make_map(alerts, now, height=380, focus=False):
 
 st.set_page_config(page_title="Fraud monitor", page_icon="🛡️", layout="wide")
 st.markdown(CSS, unsafe_allow_html=True)
+require_login()
 with st.container(key="hover_box"):
     st.toggle("hover hold", key="hover_hold", label_visibility="collapsed")
     st.html(HOLD_JS, unsafe_allow_javascript=True)

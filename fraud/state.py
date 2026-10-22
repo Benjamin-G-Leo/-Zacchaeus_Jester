@@ -11,7 +11,9 @@ one to write back). Every command is O(1) or O(log n) on a tiny set.
 """
 import os
 
-from .common import REDIS_URL
+from urllib.parse import urlparse
+
+from .common import REDIS_PASSWORD, REDIS_URL
 from .retry import retry_with_backoff
 from .rules import VELOCITY_WINDOW_S, UserState, evaluate
 
@@ -65,16 +67,32 @@ class RedisStore:
         return alerts
 
 
+def redis_client(db=None):
+    """A Redis client using REDIS_URL and REDIS_PASSWORD. `db` overrides the database in the URL."""
+    import redis
+
+    u = urlparse(REDIS_URL)
+    return redis.Redis(
+        host=u.hostname or "localhost",
+        port=u.port or 6379,
+        db=db if db is not None else int((u.path or "/0").lstrip("/") or 0),
+        password=REDIS_PASSWORD or u.password or None,
+        decode_responses=True,
+    )
+
+
 def make_store():
     """STATE_BACKEND=redis (default) or memory."""
     if os.environ.get("STATE_BACKEND", "redis") == "memory":
         return MemoryStore()
     import redis
 
-    client = redis.Redis.from_url(REDIS_URL, decode_responses=True)
+    client = redis_client()
     retry_with_backoff(  # Redis may still be starting under Docker
         client.ping,
         "Redis",
         retry_on=(redis.exceptions.ConnectionError, redis.exceptions.TimeoutError, OSError),
+        # AuthenticationError is a kind of ConnectionError, but a wrong password never fixes itself
+        fatal=(redis.exceptions.AuthenticationError,),
     )
     return RedisStore(client)

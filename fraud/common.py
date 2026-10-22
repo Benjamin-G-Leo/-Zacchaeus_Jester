@@ -2,9 +2,33 @@
 import json
 import math
 import os
+from pathlib import Path
+
+
+def load_dotenv(path):
+    """Read KEY=VALUE lines from a .env file into the environment.
+
+    Real environment variables win, so nothing here can override what you set yourself.
+    Missing file is fine. Passwords live in .env, which git ignores.
+    """
+    try:
+        lines = Path(path).read_text().splitlines()
+    except OSError:
+        return
+    for line in lines:
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        os.environ.setdefault(key.strip(), value.strip().strip("\"'"))
+
+
+load_dotenv(Path(__file__).resolve().parent.parent / ".env")
 
 BOOTSTRAP = os.environ.get("KAFKA_BOOTSTRAP", "localhost:9092")
 REDIS_URL = os.environ.get("REDIS_URL", "redis://localhost:6379/0")
+REDIS_PASSWORD = os.environ.get("REDIS_PASSWORD", "")
+DASHBOARD_PASSWORD = os.environ.get("DASHBOARD_PASSWORD", "")  # empty means the dashboard is open
 TOPIC_TX = "transactions"
 TOPIC_ALERTS = "fraud_alerts"
 TOPIC_DLQ = "transactions_dlq"  # dead letters: messages the detector could not use

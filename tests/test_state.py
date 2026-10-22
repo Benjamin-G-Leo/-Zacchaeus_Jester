@@ -4,16 +4,18 @@ import random
 import pytest
 
 from fraud.common import CITIES
-from fraud.state import MemoryStore, RedisStore
+from fraud.state import MemoryStore, RedisStore, redis_client
 
 redis = pytest.importorskip("redis")
 
 
 @pytest.fixture
 def client():
-    r = redis.Redis(db=15, decode_responses=True)  # db 15 so tests never touch real state
+    r = redis_client(db=15)  # db 15 so tests never touch real state
     try:
         r.ping()
+    except redis.AuthenticationError:  # checked first: it is also a ConnectionError, and must not skip quietly
+        pytest.fail("Redis rejected the password. Check REDIS_PASSWORD in .env")
     except redis.ConnectionError:
         pytest.skip("Redis is not running (docker compose up -d)")
     r.flushdb()
