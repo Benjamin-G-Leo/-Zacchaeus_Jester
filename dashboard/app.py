@@ -24,9 +24,10 @@ from fraud.common import BOOTSTRAP, CITIES
 LABEL = {"impossible_travel": "Impossible travel", "velocity": "Velocity", "amount_spike": "Amount spike"}
 COLOR = {"impossible_travel": "#ef4444", "velocity": "#f59e0b", "amount_spike": "#3b82f6"}
 CSS_CLASS = {"impossible_travel": "c-red", "velocity": "c-amber", "amount_spike": "c-blue"}
-LIST_EVERY_S = 5  # the lists and the map refresh in one batch this often, and hold still in between
+LIST_EVERY_S = 10  # the lists refresh in one batch this often, and hold still in between
+MAP_EVERY_S = 20  # the map redraws (a whole new Plotly chart) less often than the lists
 BANNER_S = 6
-BANNER_HOLD_S = 2  # keep one banner message on screen at least this long
+BANNER_HOLD_S = 5  # keep one banner message on screen at least this long, so it can be read
 NEW_DOT_S = 4  # an alert keeps its green "new" dot for this long after it arrives
 ROWS_PER_COLUMN = 12
 SEVERITY = {"impossible_travel": "Critical", "velocity": "High", "amount_spike": "Medium"}
@@ -142,7 +143,7 @@ header[data-testid="stHeader"], #MainMenu, footer, [data-testid="stStatusWidget"
 .empty { padding: 30px 14px; text-align: center; color: var(--faint); font-size: 13px; }
 
 /* a hidden switch the hover script flips; out of the layout so it adds no gap */
-.st-key-hover_box { position: absolute; width: 0; height: 0; overflow: hidden; opacity: 0; pointer-events: none; }
+.st-key-hover_box { position: absolute; width: 0; height: 0; overflow: hidden; opacity: 0; pointer-events: none; visibility: hidden; }
 
 /* detail dialog */
 [data-testid="stDialog"] div[role="dialog"] { background: var(--bg); border: 1px solid var(--line); border-radius: 12px; }
@@ -249,6 +250,7 @@ def refresh_view(snap, now):
     ss.setdefault("view_at", 0.0)
     ss.setdefault("view_version", 0)
     ss.setdefault("new_keys", set())
+    ss.setdefault("map_at", 0.0)
     paused = bool(ss.get("paused", False))
     holding = bool(ss.get("hover_hold", False))  # pointer or focus is on a list
     resumed = ss.get("was_paused", False) and not paused
@@ -260,6 +262,8 @@ def refresh_view(snap, now):
         ss.new_keys = set() if first else {alert_key(a) for a in ss.view if alert_key(a) not in before}
         ss.view_at = now
         ss.view_version += 1
+        if resumed:
+            ss.map_at = 0.0  # coming back from Pause: catch the map up too
 
 
 def is_new(a, now):
@@ -306,6 +310,9 @@ def header_html(snap, now):
     if snap["error"]:
         return (f'<div class="top"><div class="brand"><h1>Fraud monitor</h1></div>'
                 f'<span class="chip"><span class="dot c-amber"></span>Waiting for Kafka at {html.escape(BOOTSTRAP)}</span></div>')
+    if snap["tx_per_sec"] <= 0:  # connected, but no transactions in the last 10 seconds
+        return ('<div class="top"><div class="brand"><h1>Fraud monitor</h1><span>transactions · fraud_alerts</span></div>'
+                '<span class="chip"><span class="dot c-amber"></span>Connected, no transactions</span></div>')
     return (f'<div class="top"><div class="brand"><h1>Fraud monitor</h1><span>transactions · fraud_alerts</span></div>'
             f'<span class="chip"><span class="dot c-green pulse" style="{phase(now)}"></span>Live</span></div>')
 
@@ -527,8 +534,8 @@ def make_map(alerts, now, height=380, focus=False):
     fig.update_geos(projection_type="natural earth", showland=True, landcolor="#18181b", showocean=True,
                     oceancolor="#09090b", showcountries=True, countrycolor="#27272a", coastlinecolor="#3f3f46",
                     showframe=False, bgcolor="rgba(0,0,0,0)", fitbounds=False)
-    if focus:  # detail view: frame the alert's own cities, with padding, instead of the whole world
-        names = {c for a in alerts for c in (a["city"], a.get("from_city")) if c in CITIES}
+    names = {c for a in alerts for c in (a["city"], a.get("from_city")) if c in CITIES}
+    if focus and names:  # detail view: frame the alert's own cities, with padding, instead of the whole world
         lats = [CITIES[c][0] for c in names]
         lons = [CITIES[c][1] for c in names]
         lat_lo, lat_hi = max(-85, min(lats) - 14), min(85, max(lats) + 14)
@@ -569,9 +576,10 @@ st.markdown(banner_html(now), unsafe_allow_html=True)
 st.markdown(badges_html(snap, now), unsafe_allow_html=True)
 
 st.markdown('<div class="section">Alert map</div>', unsafe_allow_html=True)
-# Plotly remounts whenever its figure changes, so rebuild it only when the lists refresh.
-if ss.get("map_version") != ss.view_version:
-    ss.map_fig, ss.map_version = make_map(ss.view[:80], now), ss.view_version
+# Plotly remounts the whole chart whenever its figure changes, which can flash. Rebuild it only
+# when the lists have refreshed AND at least MAP_EVERY_S has passed.
+if "map_fig" not in ss or (ss.get("map_version") != ss.view_version and now - ss.map_at >= MAP_EVERY_S):
+    ss.map_fig, ss.map_version, ss.map_at = make_map(ss.view[:80], now), ss.view_version, now
 # scrollZoom off, or scrolling the page over the map zooms the map instead
 st.plotly_chart(ss.map_fig, width="stretch", key="map", config={"scrollZoom": False, "displayModeBar": False})
 st.markdown(legend_html(), unsafe_allow_html=True)

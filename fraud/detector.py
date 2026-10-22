@@ -29,6 +29,8 @@ def handle(raw, store):
     Only bad *data* is rejected here. Infrastructure errors (Redis down, ...) are not
     caught on purpose: the detector should stop and replay, not drop messages.
     """
+    if raw is None:  # a Kafka "tombstone": a record with no value at all
+        return [], "empty message"
     try:
         tx = loads(raw)
     except ValueError as e:  # bad JSON or bad UTF-8
@@ -87,7 +89,7 @@ def main():
                         rejected += 1
                         dead = {
                             "reason": reason,
-                            "raw": rec.value.decode("utf-8", "replace")[:2000],
+                            "raw": (rec.value or b"").decode("utf-8", "replace")[:2000],
                             "partition": rec.partition,
                             "offset": rec.offset,
                             "ts": time.time(),

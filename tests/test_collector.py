@@ -128,7 +128,7 @@ def test_good_alert_parses():
 @pytest.mark.parametrize(
     "message",
     [b"not json", b"[]", b"\xff\xfe", raw(rule="nope"), raw(rule=None), raw(user_id=5), raw(amount="1"),
-     raw(amount=float("nan")), raw(ts=None), raw(city=None)],
+     raw(amount=float("nan")), raw(ts=None), raw(city=None), None, raw(ts=1e20), raw(ts=-5)],
 )
 def test_bad_alerts_are_rejected_not_raised(message):
     assert parse_alert(message) is None

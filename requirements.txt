@@ -1,6 +1,5 @@
-kafka-python>=2.0.3
+kafka-python>=3.0
 redis>=5
-streamlit>=1.40
+streamlit>=1.66
 plotly>=5
-pandas>=2
 pytest>=8

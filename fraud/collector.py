@@ -21,6 +21,8 @@ from .retry import connect_kafka
 RATE_WINDOW_S = 10
 HISTORY_S = 60  # seconds of throughput history, and the "active anomalies" window
 
+MAX_TS = 4_102_444_800  # 2100-01-01. Anything later is garbage, and time.localtime() raises on it.
+
 _NUMBER_FIELDS = ("distance_km", "elapsed_s", "speed_kmh", "count", "window_s", "typical", "limit", "multiple", "samples")
 
 
@@ -34,6 +36,8 @@ def parse_alert(raw):
     The dashboard indexes these fields directly, so a missing one raised a KeyError on
     every redraw and froze the page for everyone until the server restarted.
     """
+    if raw is None:  # a Kafka record with no value at all
+        return None
     try:
         a = loads(raw)
     except ValueError:
@@ -44,6 +48,8 @@ def parse_alert(raw):
         if not isinstance(a.get(key), str):
             return None
     if not _is_number(a.get("amount")) or not _is_number(a.get("ts")):
+        return None
+    if not 0 <= a["ts"] <= MAX_TS:
         return None
     for key in _NUMBER_FIELDS:  # optional detail numbers: keep only the ones that really are numbers
         if key in a and not _is_number(a[key]):

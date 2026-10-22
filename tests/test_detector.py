@@ -29,6 +29,12 @@ def test_unknown_city_is_rejected_and_never_reaches_state():
     assert store.users == {}  # the bad city is not remembered, so it cannot crash later swipes
 
 
+def test_message_with_no_value_is_rejected_not_raised():
+    """A Kafka record with a null value used to raise TypeError and stop the detector."""
+    alerts, reason = handle(None, MemoryStore())
+    assert alerts == [] and reason == "empty message"
+
+
 def test_nan_amount_is_rejected():
     assert handle(raw(amount=float("nan")), MemoryStore())[1] == "bad amount"
 
