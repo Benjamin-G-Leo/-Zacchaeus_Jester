@@ -7,6 +7,8 @@ BOOTSTRAP = os.environ.get("KAFKA_BOOTSTRAP", "localhost:9092")
 REDIS_URL = os.environ.get("REDIS_URL", "redis://localhost:6379/0")
 TOPIC_TX = "transactions"
 TOPIC_ALERTS = "fraud_alerts"
+TOPIC_DLQ = "transactions_dlq"  # dead letters: messages the detector could not use
+RULES = ("impossible_travel", "velocity", "amount_spike")
 
 # name -> (lat, lon)
 CITIES = {

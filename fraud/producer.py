@@ -89,6 +89,12 @@ def main():
     p.add_argument("--duration", type=float, default=0, help="seconds, 0 = forever")
     p.add_argument("--seed", type=int)
     args = p.parse_args()
+    if args.rate <= 0:
+        p.error("--rate must be above 0")  # it is divided into 1 second below
+    if args.users < 1:
+        p.error("--users must be at least 1")
+    if not (0 <= args.travel_rate and 0 <= args.fraud_rate and args.travel_rate + args.fraud_rate <= 1):
+        p.error("--travel-rate and --fraud-rate must be 0 or more and add up to at most 1")
 
     rng = random.Random(args.seed)
     users = make_users(args.users, rng)
@@ -119,6 +125,9 @@ def main():
                 producer.send(TOPIC_TX, key=t["user_id"], value=t)
                 sent += 1
             next_tick += 1 / args.rate
+            # After a stall (a blocked send), don't try to catch up all at once: that would be
+            # an unplanned burst. Forget any backlog beyond one second.
+            next_tick = max(next_tick, time.time() - 1.0)
             delay = next_tick - time.time()
             if delay > 0:
                 time.sleep(delay)

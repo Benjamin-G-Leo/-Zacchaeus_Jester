@@ -1,5 +1,14 @@
 [server]
 headless = true
+address = "127.0.0.1"  # the dashboard has no login, so don't offer it to the whole network
 
 [browser]
 gatherUsageStats = false
+
+[theme]
+base = "dark"
+backgroundColor = "#09090b"
+secondaryBackgroundColor = "#18181b"
+textColor = "#fafafa"
+primaryColor = "#ef4444"
+borderColor = "#27272a"

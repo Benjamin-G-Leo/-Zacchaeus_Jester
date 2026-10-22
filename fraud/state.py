@@ -45,11 +45,13 @@ class RedisStore:
 
         # Slide the window, add this tx, count it, load state: one round trip.
         # The member is tx_id, so a replayed message doesn't count twice.
+        # ZCOUNT, not ZCARD: only swipes in the window that ends at this one count, so a
+        # future-dated entry cannot inflate the total (same rule as the in-memory store).
         pipe = self.r.pipeline()
         pipe.hgetall(skey)
         pipe.zremrangebyscore(wkey, "-inf", f"({ts - VELOCITY_WINDOW_S}")
         pipe.zadd(wkey, {tx["tx_id"]: ts})
-        pipe.zcard(wkey)
+        pipe.zcount(wkey, ts - VELOCITY_WINDOW_S, ts)
         pipe.expire(wkey, TTL_S)
         fields, _, _, count, _ = pipe.execute()
 

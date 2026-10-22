@@ -21,7 +21,7 @@ def client():
     r.flushdb()
 
 
-def stream(seed, n=600):
+def stream(seed, n=600, skew=(-3, 0)):
     """Random but reproducible traffic: bursts, travel, spikes, out-of-order times."""
     rng = random.Random(seed)
     cities = list(CITIES)
@@ -33,8 +33,8 @@ def stream(seed, n=600):
         r = rng.random()
         city = users[u] if r < 0.85 else rng.choice(cities)
         amount = rng.uniform(20, 60) if r < 0.95 else rng.uniform(500, 900)
-        jitter = rng.uniform(-3, 0) if rng.random() < 0.1 else 0  # a little out of order
-        yield {"tx_id": f"t{seed}-{i}", "user_id": u, "amount": round(amount, 2), "city": city, "ts": t + jitter}
+        off = rng.uniform(*skew) if rng.random() < 0.1 else 0  # some events out of order
+        yield {"tx_id": f"t{seed}-{i}", "user_id": u, "amount": round(amount, 2), "city": city, "ts": t + off}
 
 
 @pytest.mark.parametrize("seed", [1, 2, 3])
@@ -46,6 +46,18 @@ def test_redis_matches_memory(client, seed):
         assert [x["rule"] for x in a] == [x["rule"] for x in b], tx
         total += len(a)
     assert total > 0  # the stream actually triggered rules
+
+
+@pytest.mark.parametrize("seed", [4, 5, 6])
+def test_redis_matches_memory_when_events_are_far_out_of_order(client, seed):
+    """Up to 200s early or late, so future-dated swipes and stale ones both occur."""
+    mem, red = MemoryStore(), RedisStore(client)
+    total = 0
+    for tx in stream(seed, skew=(-200, 200)):
+        a, b = mem.process(tx), red.process(tx)
+        assert [x["rule"] for x in a] == [x["rule"] for x in b], tx
+        total += len(a)
+    assert total > 0
 
 
 def test_state_survives_a_new_store_object(client):

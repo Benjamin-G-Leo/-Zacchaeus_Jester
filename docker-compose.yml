@@ -3,7 +3,7 @@ services:
     image: apache/kafka:3.9.0
     container_name: fraud-kafka
     ports:
-      - "9092:9092"
+      - "127.0.0.1:9092:9092"  # this machine only; Kafka here has no login
     environment:
       KAFKA_NODE_ID: 1
       KAFKA_PROCESS_ROLES: broker,controller
@@ -23,7 +23,7 @@ services:
     container_name: fraud-redis
     command: ["redis-server", "--appendonly", "yes"]  # keep state across Redis restarts too
     ports:
-      - "6379:6379"
+      - "127.0.0.1:6379:6379"  # this machine only; Redis here has no password
     volumes:
       - redisdata:/data
 
